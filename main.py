@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, Any
 import os
 import time
+import wandb
 
 
 class RepresentationType(Enum):
@@ -48,6 +49,7 @@ def save_optical_flow_to_npy(flow: torch.Tensor, file_name: str):
 def main(args: DictConfig):
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    wandb.init(project="optical_flow", config=args)
     '''
         ディレクトリ構造:
 
@@ -70,7 +72,7 @@ def main(args: DictConfig):
             ├─zurich_city_11_b
             └─zurich_city_11_c
         '''
-    
+
     # ------------------
     #    Dataloader
     # ------------------
@@ -101,7 +103,7 @@ def main(args: DictConfig):
         Key: event_volume, Type: torch.Tensor, Shape: torch.Size([Batch, 4, 480, 640]) => イベントデータのバッチ
         Key: flow_gt, Type: torch.Tensor, Shape: torch.Size([Batch, 2, 480, 640]) => オプティカルフローデータのバッチ
         Key: flow_gt_valid_mask, Type: torch.Tensor, Shape: torch.Size([Batch, 1, 480, 640]) => オプティカルフローデータのvalid. ベースラインでは使わない
-    
+
     test data:
         Type of batch: Dict
         Key: seq_name, Type: list
@@ -130,17 +132,19 @@ def main(args: DictConfig):
             flow = model(event_image) # [B, 2, 480, 640]
             loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow)
             print(f"batch {i} loss: {loss.item()}")
+            wandb.log({"train_loss": loss.item()})
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
         print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_data)}')
+        wandb.log({"epoch_train_loss": total_loss / len(train_data)})
 
     # Create the directory if it doesn't exist
     if not os.path.exists('checkpoints'):
         os.makedirs('checkpoints')
-    
+
     current_time = time.strftime("%Y%m%d%H%M%S")
     model_path = f"checkpoints/model_{current_time}.pth"
     torch.save(model.state_dict(), model_path)
