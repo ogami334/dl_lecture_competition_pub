@@ -14,6 +14,7 @@ from typing import Dict, Any
 import os
 import time
 import wandb
+import omegaconf
 
 
 class RepresentationType(Enum):
@@ -49,7 +50,11 @@ def save_optical_flow_to_npy(flow: torch.Tensor, file_name: str):
 def main(args: DictConfig):
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    wandb.init(project="optical_flow", config=args)
+    run = wandb.init(project="optical_flow")
+    wandb.config = omegaconf.OmegaConf.to_container(
+        args, resolve=True, throw_on_missing=True
+    )
+    os.makedirs(f'checkpoints/{run.name}', exist_ok=True)
     '''
         ディレクトリ構造:
 
@@ -80,14 +85,21 @@ def main(args: DictConfig):
         dataset_path=Path(args.dataset_path),
         representation_type=RepresentationType.VOXEL,
         delta_t_ms=100,
-        num_bins=4
+        num_bins=4,
+        val_fold=args.val_fold,
     )
     train_set = loader.get_train_dataset()
+    val_set = loader.get_val_dataset()
     test_set = loader.get_test_dataset()
     collate_fn = train_collate
     train_data = DataLoader(train_set,
                                  batch_size=args.data_loader.train.batch_size,
                                  shuffle=args.data_loader.train.shuffle,
+                                 collate_fn=collate_fn,
+                                 drop_last=False)
+    val_data = DataLoader(val_set,
+                                 batch_size=args.data_loader.val.batch_size,
+                                 shuffle=args.data_loader.val.shuffle,
                                  collate_fn=collate_fn,
                                  drop_last=False)
     test_data = DataLoader(test_set,
@@ -121,34 +133,53 @@ def main(args: DictConfig):
     # ------------------
     #   Start training
     # ------------------
-    model.train()
-    for epoch in range(args.train.epochs):
-        total_loss = 0
-        print("on epoch: {}".format(epoch+1))
-        for i, batch in enumerate(tqdm(train_data)):
-            batch: Dict[str, Any]
-            event_image = batch["event_volume"].to(device) # [B, 4, 480, 640]
-            ground_truth_flow = batch["flow_gt"].to(device) # [B, 2, 480, 640]
-            flow = model(event_image) # [B, 2, 480, 640]
-            loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow)
-            print(f"batch {i} loss: {loss.item()}")
-            wandb.log({"train_loss": loss.item()})
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+    best_val_loss = float("inf")
 
-            total_loss += loss.item()
-        print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_data)}')
-        wandb.log({"epoch_train_loss": total_loss / len(train_data)})
+    if args.mode == "train":
+        for epoch in range(args.train.epochs):
+            model.train()
+            total_loss = 0
+            print("on epoch: {}".format(epoch+1))
+            for i, batch in enumerate(tqdm(train_data)):
+                batch: Dict[str, Any]
+                event_image = batch["event_volume"].to(device) # [B, 4, 480, 640]
+                ground_truth_flow = batch["flow_gt"].to(device) # [B, 2, 480, 640]
+                flow = model(event_image) # [B, 2, 480, 640]
+                loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow)
+                wandb.log({"train_loss": loss.item()})
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-    # Create the directory if it doesn't exist
-    if not os.path.exists('checkpoints'):
-        os.makedirs('checkpoints')
+                total_loss += loss.item()
+            print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_data)}')
+            wandb.log({"epoch_train_loss": total_loss / len(train_data)})
 
-    current_time = time.strftime("%Y%m%d%H%M%S")
-    model_path = f"checkpoints/model_{current_time}.pth"
-    torch.save(model.state_dict(), model_path)
-    print(f"Model saved to {model_path}")
+            model.eval()
+            total_loss = 0
+            with torch.no_grad():
+                for i, batch in enumerate(tqdm(val_data)):
+                    batch: Dict[str, Any]
+                    event_image = batch["event_volume"].to(device)
+                    ground_truth_flow = batch["flow_gt"].to(device)
+                    flow = model(event_image)
+                    loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow)
+                    print(f"batch {i} loss: {loss.item()}")
+                    wandb.log({"val_loss": loss.item()})
+                    total_loss += loss.item()
+                epoch_val_loss = total_loss / len(val_data)
+                print(f'Epoch {epoch+1}, Loss: {epoch_val_loss}')
+                wandb.log({"epoch_val_loss": epoch_val_loss})
+                if epoch_val_loss < best_val_loss:
+                    best_val_loss = epoch_val_loss
+                    torch.save(model.state_dict(), f"checkpoints/{run.name}/best_model.pth")
+
+        current_time = time.strftime("%Y%m%d%H%M%S")
+        model_path = f"checkpoints/{run.name}/epoch-{epoch}.pth"
+        torch.save(model.state_dict(), model_path)
+        print(f"Model saved to {model_path}")
+    else:
+        model_path = "/home/u00592/dl_lecture_competition_pub/checkpoints/pretty-tree-17/best_model.pth"
 
     # ------------------
     #   Start predicting
@@ -160,14 +191,14 @@ def main(args: DictConfig):
         print("start test")
         for batch in tqdm(test_data):
             batch: Dict[str, Any]
-            event_image = batch["event_volume_old"].to(device)
+            event_image = batch["event_volume"].to(device)
             batch_flow = model(event_image) # [1, 2, 480, 640]
             flow = torch.cat((flow, batch_flow), dim=0)  # [N, 2, 480, 640]
         print("test done")
     # ------------------
     #  save submission
     # ------------------
-    file_name = "submission.npy"
+    file_name = "submission"
     save_optical_flow_to_npy(flow, file_name)
 
 if __name__ == "__main__":
