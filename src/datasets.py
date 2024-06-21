@@ -315,7 +315,7 @@ class Sequence(Dataset):
         assert x.max() < self.width
         assert y.max() < self.height
         return rectify_map[y, x]
-    
+
     def get_data(self, index) -> Dict[str, any]:
         ts_start: int = self.timestamps_flow[index] - self.delta_t_us
         ts_end: int = self.timestamps_flow[index]
@@ -348,7 +348,7 @@ class Sequence(Dataset):
                 p, t, x_rect, y_rect)
             output['event_volume'] = event_representation
         output['name_map'] = self.name_idx
-        
+
         if self.load_gt:
             output['flow_gt'
                 ] = [torch.tensor(x) for x in self.load_flow(self.flow_png[index])]
@@ -512,7 +512,7 @@ class SequenceRecurrent(Sequence):
             i, j, h, w = RandomCrop.get_params(
                 sample["event_volume_old"], output_size=self.crop_size)
             keys_to_crop = ["event_volume_old", "event_volume_new",
-                            "flow_gt_event_volume_old", "flow_gt_event_volume_new", 
+                            "flow_gt_event_volume_old", "flow_gt_event_volume_new",
                             "flow_gt_next",]
 
             for sample in sequence:
@@ -527,7 +527,7 @@ class SequenceRecurrent(Sequence):
 
 
 class DatasetProvider:
-    def __init__(self, dataset_path: Path, representation_type: RepresentationType, delta_t_ms: int = 100, num_bins=4,
+    def __init__(self, dataset_path: Path, representation_type: RepresentationType, val_fold: int = 0, delta_t_ms: int = 100, num_bins=4,
                 config=None, visualize=False):
         test_path = Path(os.path.join(dataset_path, 'test'))
         train_path = Path(os.path.join(dataset_path, 'train'))
@@ -555,18 +555,28 @@ class DatasetProvider:
         seqs = available_seqs
 
         train_sequences: list[Sequence] = []
-        for seq in seqs:
+        val_sequences: list[Sequence] = []
+        for seq_idx, seq in enumerate(seqs):
             extra_arg = dict()
-            train_sequences.append(Sequence(Path(train_path) / seq,
-                                   representation_type=representation_type, mode="train",
-                                   load_gt=True, **extra_arg))
-            self.train_dataset: torch.utils.data.ConcatDataset[Sequence] = torch.utils.data.ConcatDataset(train_sequences)
+            if seq_idx % 3 == val_fold:
+                val_sequences.append(Sequence(Path(train_path) / seq,
+                                              representation_type=representation_type, mode="train",
+                                              load_gt=True, **extra_arg))
+            else:
+                train_sequences.append(Sequence(Path(train_path) / seq,
+                                    representation_type=representation_type, mode="train",
+                                    load_gt=True, **extra_arg))
+        self.train_dataset: torch.utils.data.ConcatDataset[Sequence] = torch.utils.data.ConcatDataset(train_sequences)
+        self.val_dataset: torch.utils.data.ConcatDataset[Sequence] = torch.utils.data.ConcatDataset(val_sequences)
 
     def get_test_dataset(self):
         return self.test_dataset
 
     def get_train_dataset(self):
         return self.train_dataset
+
+    def get_val_dataset(self):
+        return self.val_dataset
 
     def get_name_mapping_test(self):
         return self.name_mapper_test

@@ -62,8 +62,11 @@ class EVFlowNet(nn.Module):
         inputs, flow = self.decoder4(inputs)
         flow_dict['flow3'] = flow.clone()
 
-        return flow
-        
+        flow0 = torch.nn.functional.interpolate(flow_dict['flow0'], size=flow.size()[2:], mode='bilinear', align_corners=False)
+        flow1 = torch.nn.functional.interpolate(flow_dict['flow1'], size=flow.size()[2:], mode='bilinear', align_corners=False)
+        flow2 = torch.nn.functional.interpolate(flow_dict['flow2'], size=flow.size()[2:], mode='bilinear', align_corners=False)
+        flow3 = torch.nn.functional.interpolate(flow_dict['flow3'], size=flow.size()[2:], mode='bilinear', align_corners=False)
+        return flow0 + flow1 + flow2 + flow3
 
 # if __name__ == "__main__":
 #     from config import configs
